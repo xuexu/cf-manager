@@ -1,3 +1,15 @@
+import dotenv from 'dotenv';
+import path from 'path';
+
+// 显式指定 .env 路径，确保无论从哪个目录启动都能正确加载
+const envPath = path.join(__dirname, '..', '.env');
+const result = dotenv.config({ path: envPath });
+if (result.error) {
+  console.error(`[dotenv] 加载 .env 失败 (${envPath}): ${result.error.message}`);
+} else {
+  console.log(`[dotenv] 已加载 ${envPath}`);
+}
+
 import express from 'express';
 import cors from 'cors';
 import { config } from './config';

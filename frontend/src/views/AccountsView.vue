@@ -4,6 +4,7 @@
       <n-h2>账号管理</n-h2>
       <n-space>
         <n-button @click="showImportModal = true">导入 CSV</n-button>
+        <n-button @click="openBatchImport">批量导入</n-button>
         <n-button type="primary" @click="showAddModal = true">添加账号</n-button>
       </n-space>
     </n-space>
@@ -87,7 +88,7 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showImportModal" preset="dialog" title="导入 CSV" style="width: 700px; max-width: 95vw">
+<n-modal v-model:show="showImportModal" preset="dialog" title="导入 CSV" style="width: 700px; max-width: 95vw">
       <n-space vertical :size="16">
         <n-alert type="info" :bordered="false">
           CSV 表头须包含 <n-text code>email</n-text> 和 <n-text code>apiKey</n-text>（可选 <n-text code>password</n-text>）。
@@ -138,7 +139,7 @@
         </n-space>
         <n-data-table
           v-if="batchResult"
-          :columns="batchResultColumns"
+          :columns="batchTestResultColumns"
           :data="batchResult.results"
           :bordered="false"
           size="small"
@@ -149,12 +150,55 @@
         <n-button type="primary" @click="showBatchResultModal = false">关闭</n-button>
       </template>
     </n-modal>
+
+    <n-modal v-model:show="showBatchImportModal" preset="dialog" title="批量导入账号" style="width: 600px; max-width: 95vw" :closable="!batchImporting">
+      <n-space vertical size="medium">
+        <n-text depth="3">文件格式：每行一个账号，空格/Tab 分隔，支持 # 注释</n-text>
+        <n-text depth="3" code style="font-size: 12px">账号名称  apitoken</n-text>
+        <n-upload
+          :show-file-list="false"
+          accept=".txt"
+          :disabled="batchImporting"
+          @change="handleFileSelect"
+        >
+          <n-button :loading="batchImporting">选择文件</n-button>
+        </n-upload>
+        <n-text v-if="batchFileName" type="info">{{ batchFileName }}</n-text>
+        <n-data-table
+          v-if="parsedAccounts.length > 0"
+          :columns="batchPreviewColumns"
+          :data="parsedAccounts"
+          :bordered="false"
+          size="small"
+          :max-height="250"
+          :scroll-x="300"
+        />
+        <n-text v-if="batchImportResult" :type="batchImportResult.failed > 0 ? 'warning' : 'success'">
+          导入完成：共 {{ batchImportResult.total }} 个，成功 {{ batchImportResult.succeeded }} 个，失败 {{ batchImportResult.failed }} 个
+        </n-text>
+        <n-data-table
+          v-if="batchImportResult && batchImportResult.results"
+          :columns="batchImportResultColumns"
+          :data="batchImportResult.results"
+          :bordered="false"
+          size="small"
+          :max-height="250"
+          :scroll-x="400"
+        />
+      </n-space>
+      <template #action>
+        <n-button @click="closeBatchImport" :disabled="batchImporting">取消</n-button>
+        <n-button type="primary" :loading="batchImporting" :disabled="parsedAccounts.length === 0" @click="handleBatchImport">
+          导入 ({{ parsedAccounts.length }})
+        </n-button>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, h, computed, onMounted } from 'vue';
-import { NButton, NSpace, NTag, useMessage } from 'naive-ui';
+import { NButton, NSpace, NTag, NText, NUpload, NStatistic, NAlert, NInput, NCheckbox, useMessage } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import type { UploadFileInfo } from 'naive-ui';
 import { useAccountStore } from '../stores/accountStore';
@@ -266,16 +310,102 @@ function openFeatureEditor(row: any) {
 }
 
 async function handleSaveFeatures() {
-  if (editingAccountId.value == null) return;
-  submitting.value = true;
-  try {
-    await accountStore.updateFeatures(editingAccountId.value, editFeatures.value.join(','));
-    message.success('功能开关已更新');
-    showFeatureModal.value = false;
-  } finally {
-    submitting.value = false;
+    if (editingAccountId.value == null) return;
+    submitting.value = true;
+    try {
+      await accountStore.updateFeatures(editingAccountId.value, editFeatures.value.join(','));
+      message.success('功能开关已更新');
+      showFeatureModal.value = false;
+    } finally {
+      submitting.value = false;
+    }
   }
-}
+
+  // ============ Batch Import (txt) ============
+  const showBatchImportModal = ref(false);
+  const batchImporting = ref(false);
+  const batchFileName = ref('');
+  const parsedAccounts = ref<Array<{ name: string; api_token: string }>>([]);
+  const batchImportResult = ref<{ total: number; succeeded: number; failed: number; results: Array<{ name: string; success: boolean; id?: number; error?: string }> } | null>(null);
+
+  const batchPreviewColumns: DataTableColumns<any> = [
+    { title: '名称', key: 'name', width: 180 },
+    { title: 'API Token', key: 'api_token', width: 200, ellipsis: { tooltip: true }, render: (row) => row.api_token ? row.api_token.substring(0, 12) + '...' : '-' },
+  ];
+
+  const batchImportResultColumns: DataTableColumns<any> = [
+    { title: '名称', key: 'name', width: 150 },
+    { title: '结果', key: 'success', width: 80, render: (row) => h(NTag, { size: 'small', type: row.success ? 'success' : 'error' }, { default: () => row.success ? '成功' : '失败' }) },
+    { title: '详情', key: 'error', width: 200, ellipsis: { tooltip: true }, render: (row) => row.error || '-' },
+  ];
+
+  function openBatchImport() {
+    showBatchImportModal.value = true;
+    batchFileName.value = '';
+    parsedAccounts.value = [];
+    batchImportResult.value = null;
+  }
+
+  function closeBatchImport() {
+    if (batchImporting.value) return;
+    showBatchImportModal.value = false;
+  }
+
+  function handleFileSelect(data: any) {
+    const fileInfo = data.file;
+    const rawFile = fileInfo?.file as File | null;
+    if (!rawFile) return;
+    batchFileName.value = fileInfo?.name || '';
+    batchImportResult.value = null;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      if (!text) return;
+      parsedAccounts.value = parseAccountFile(text);
+      if (parsedAccounts.value.length === 0) {
+        message.warning('未解析到有效账号，请检查文件格式');
+      } else {
+        message.success(`已解析 ${parsedAccounts.value.length} 个账号`);
+      }
+    };
+    reader.readAsText(rawFile);
+  }
+
+  function parseAccountFile(text: string): Array<{ name: string; api_token: string }> {
+    const results: Array<{ name: string; api_token: string }> = [];
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const parts = trimmed.split(/\s+/);
+      if (parts.length < 2) continue;
+      const name = parts[0];
+      const apiToken = parts[parts.length - 1];
+      if (name && apiToken) {
+        results.push({ name, api_token: apiToken });
+      }
+    }
+    return results;
+  }
+
+  async function handleBatchImport() {
+    if (parsedAccounts.value.length === 0) return;
+    batchImporting.value = true;
+    try {
+      const data = await accountStore.batchImport(parsedAccounts.value);
+      batchImportResult.value = data;
+      if (data.failed === 0) {
+        message.success(`全部导入成功：${data.succeeded} 个账号`);
+      } else {
+        message.warning(`导入完成：成功 ${data.succeeded} 个，失败 ${data.failed} 个`);
+      }
+    } catch (e: any) {
+      message.error('导入失败: ' + (e?.errorMessage || e?.message || '未知错误'));
+    } finally {
+      batchImporting.value = false;
+    }
+  }
 
 async function handleTest(row: any) {
   await accountStore.testAccount(row.id);
@@ -299,7 +429,7 @@ async function handleTestBatch() {
   }
 }
 
-const batchResultColumns: DataTableColumns<any> = [
+const batchTestResultColumns: DataTableColumns<any> = [
   { title: 'ID', key: 'id', width: 60 },
   { title: '名称', key: 'name', width: 150 },
   {

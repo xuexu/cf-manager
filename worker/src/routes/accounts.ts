@@ -134,6 +134,76 @@ app.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// ============ Batch Import ============
+app.post('/batch', async (c) => {
+  const db = c.env.DB;
+  const body = await c.req.json();
+  const { accounts, enabled_features } = body;
+
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'accounts must be a non-empty array' } }, 400);
+  }
+
+  const defaultFeatures = enabled_features || 'ai,workers,browser_render,dns,storage';
+  const results: Array<{ name: string; success: boolean; id?: number; error?: string }> = [];
+
+  for (const item of accounts) {
+    const { name, api_token } = item;
+    if (!name || !api_token) {
+      results.push({ name: name || '(empty)', success: false, error: 'name and api_token are required' });
+      continue;
+    }
+
+    try {
+      // Verify credentials
+      const CF_BASE = 'https://api.cloudflare.com/client/v4';
+      const verifyRes = await fetch(`${CF_BASE}/user`, {
+        headers: { Authorization: `Bearer ${api_token}` },
+      });
+      if (!verifyRes.ok) {
+        const errBody = await verifyRes.text();
+        results.push({ name, success: false, error: `凭证验证失败 (${verifyRes.status}): ${errBody}` });
+        continue;
+      }
+
+      // Create account
+      const input: any = {
+        name,
+        auth_type: 'token',
+        api_token: await encrypt(api_token, c.env.ENCRYPTION_KEY),
+        enabled_features: defaultFeatures,
+      };
+      const id = await createAccount(db, input);
+
+      // Auto-fetch account_id
+      try {
+        const saved = await getAccountById(db, id);
+        if (saved) {
+          const data = await cfFetch<{ result: any[] }>(saved, '/accounts?page=1&per_page=10', c.env.ENCRYPTION_KEY);
+          if (data.result?.length > 0) {
+            await updateAccount(db, id, { account_id: data.result[0].id });
+          }
+          await updateAccount(db, id, { is_active: 1 });
+        }
+      } catch (e) {
+        console.warn(`[BatchImport] Failed to auto-fetch account_id for "${name}": ${e}`);
+      }
+
+      await addAuditLog(db, { account_id: id, action: 'batch_import', target: name, detail: 'auth_type=token', status: 'success' });
+      results.push({ name, success: true, id });
+    } catch (e: any) {
+      results.push({ name, success: false, error: e.message || String(e) });
+    }
+  }
+
+  return c.json({
+    results,
+    total: accounts.length,
+    succeeded: results.filter(r => r.success).length,
+    failed: results.filter(r => !r.success).length,
+  });
+});
+
 app.post('/:id/test', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);

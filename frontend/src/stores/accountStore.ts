@@ -12,8 +12,8 @@ export const useAccountStore = defineStore('accounts', () => {
   const pageSize = ref(20);
   const filter = ref<'all' | 'active' | 'unverified'>('all');
   const search = ref('');
-  const total = ref(0);             // 当前筛选条件下总数
-  const counts = ref({ all: 0, active: 0, unverified: 0 }); // 三种状态各自总数
+  const total = ref(0);
+  const counts = ref({ all: 0, active: 0, unverified: 0 });
 
   async function fetchAccounts() {
     loading.value = true;
@@ -26,7 +26,6 @@ export const useAccountStore = defineStore('accounts', () => {
       });
       accounts.value = data.accounts;
       quota.value = data.quota;
-      // 分页响应可能不包含 total/counts（旧后端），做兼容
       total.value = (data as any).total ?? data.accounts.length;
       counts.value = (data as any).counts ?? { all: data.accounts.length, active: 0, unverified: 0 };
     } catch {
@@ -91,10 +90,16 @@ export const useAccountStore = defineStore('accounts', () => {
     return data as { summary: { total: number; success: number; skipped: number; error: number }; results: Array<{ email: string; name: string; status: 'success' | 'skipped' | 'error'; message?: string }> };
   }
 
+  async function batchImport(accounts: Array<{ name: string; api_token: string }>) {
+    const { data } = await accountsApi.batchImport(accounts);
+    await fetchAccounts();
+    return data;
+  }
+
   return {
     accounts, quota, loading,
     page, pageSize, filter, search, total, counts,
     fetchAccounts, setPage, setPageSize, setFilter, setSearch,
-    createAccount, deleteAccount, testAccount, testBatch, updateFeatures, importCsv,
+    createAccount, deleteAccount, testAccount, testBatch, updateFeatures, importCsv, batchImport,
   };
 });

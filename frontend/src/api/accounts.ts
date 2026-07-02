@@ -23,7 +23,9 @@ export const accountsApi = {
     if (skipVerify) formData.append('skipVerify', '1');
     return apiClient.post('/accounts/import-csv', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 600000, // 10 分钟，并发批处理下足够覆盖数百账户
+      timeout: 600000,
     });
   },
+  batchImport: (accounts: Array<{ name: string; api_token: string }>, enabled_features?: string) =>
+    apiClient.post('/accounts/batch', { accounts, enabled_features }),
 };

@@ -163,6 +163,69 @@ router.delete('/:id', (req: Request, res: Response, next: NextFunction) => {
   } catch (err) { next(err); }
 });
 
+// ============ Batch Import ============
+router.post('/batch', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accounts } = req.body;
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'accounts must be a non-empty array' } });
+      return;
+    }
+
+    const results: Array<{ name: string; success: boolean; id?: number; error?: string }> = [];
+    for (const item of accounts) {
+      const { name, api_token } = item;
+      if (!name || !api_token) {
+        results.push({ name: name || '(empty)', success: false, error: 'name and api_token are required' });
+        continue;
+      }
+
+      try {
+        // Verify credentials
+        const httpAgent = getHttpAgent();
+        const opts: Record<string, any> = {};
+        if (httpAgent) opts.httpAgent = httpAgent;
+        const tempCf = new Cloudflare({ apiToken: api_token, ...opts });
+        await tempCf.user.get();
+
+        // Create account
+        const input: AccountInput = {
+          name,
+          auth_type: 'token',
+          api_token: encrypt(api_token),
+          enabled_features: req.body.enabled_features || 'ai,workers,browser_render,dns,storage',
+        };
+        const id = createAccount(input);
+
+        // Auto-fetch account_id
+        try {
+          const saved = getAccountById(id);
+          if (saved) {
+            const cf = getCfClient(saved);
+            const accts: any[] = [];
+            for await (const acct of cf.accounts.list()) {
+              accts.push(acct as any);
+            }
+            if (accts.length > 0) {
+              updateAccountId(id, accts[0].id);
+            }
+            updateAccountStatus(id, true);
+          }
+        } catch (e) {
+          appLogger.warn(`[BatchImport] Failed to auto-fetch account_id for "${name}": ${e}`);
+        }
+
+        createAuditLog(id, 'batch_import', name, 'auth_type=token', 'success');
+        results.push({ name, success: true, id });
+      } catch (e: any) {
+        results.push({ name, success: false, error: e.message || String(e) });
+      }
+    }
+
+    res.json({ results, total: accounts.length, succeeded: results.filter(r => r.success).length, failed: results.filter(r => !r.success).length });
+  } catch (err) { next(err); }
+});
+
 router.post('/:id/test', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const accountId = parseInt(req.params.id as string, 10);

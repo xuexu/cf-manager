@@ -85,7 +85,7 @@ app.get('/', async (c) => {
       cfFetch<{ result: any[] }>(account, `/accounts/${account.account_id}/pages/projects`, c.env.ENCRYPTION_KEY),
     ]);
     if (workersRes.status === 'fulfilled') {
-      items.push(...(workersRes.value.result || []).map(w => ({ ...w, type: 'worker', cfAccountId: account.id, accountName: account.name })));
+      items.push(...(workersRes.value.result || []).map(w => ({ ...w, name: w.name || w.id, type: 'worker', cfAccountId: account.id, accountName: account.name })));
     } else { console.error(`[Workers] list failed for ${account.name}: ${workersRes.reason}`); }
     if (pagesRes.status === 'fulfilled') {
       items.push(...(pagesRes.value.result || []).map(p => ({ ...p, type: 'pages', cfAccountId: account.id, accountName: account.name })));
