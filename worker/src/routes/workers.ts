@@ -473,7 +473,8 @@ app.post('/:accountId/pages/deploy', async (c) => {
 
   for (const f of files) {
     const basename = f.path.split('/').pop() || f.path;
-    if (SPECIAL_FILES.has(basename) && !f.path.includes('/')) {
+    const isRootLevel = !f.path.includes('/');
+    if (SPECIAL_FILES.has(basename) && isRootLevel) {
       specialFiles.push({ name: basename, buffer: f.buffer });
     } else {
       const hash = await sha256Hex(f.buffer);
@@ -557,9 +558,25 @@ app.post('/batch-deploy-pages', async (c) => {
   if (!zipFile) return c.json({ error: { code: 'NO_FILE', message: 'Zip file is required' } }, 400);
 
   const zipBuffer = new Uint8Array(await zipFile.arrayBuffer());
-  const files = await extractZipFiles(zipBuffer);
+  const extracted = await extractZipFiles(zipBuffer);
 
-  if (files.length === 0) return c.json({ error: { code: 'EMPTY_ZIP', message: 'Zip file contains no files' } }, 400);
+  if (extracted.length === 0) return c.json({ error: { code: 'EMPTY_ZIP', message: 'Zip file contains no files' } }, 400);
+
+  // Strip common prefix (same logic as single deploy)
+  let prefix = '';
+  if (extracted.length > 0) {
+    const parts = extracted[0].path.split('/');
+    if (parts.length > 1) {
+      const candidate = parts[0] + '/';
+      if (extracted.every(f => f.path.startsWith(candidate))) {
+        prefix = candidate;
+      }
+    }
+  }
+  const files = extracted.map(f => ({
+    path: prefix ? f.path.slice(prefix.length) : f.path,
+    buffer: f.buffer,
+  }));
 
   const results: Array<{ accountId: number; workerName: string; success: boolean; error?: string }> = [];
   for (const t of targets) {

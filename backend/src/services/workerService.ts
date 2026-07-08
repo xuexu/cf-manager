@@ -511,14 +511,14 @@ export async function deployPages(
   }
 
   // 3. Build manifest + deployment params, separating special files
-  // SDK uses camelCase param names, NOT the raw filenames
+  // SDK param names match the Cloudflare API: exact original filenames
   const SPECIAL_FILE_TO_PARAM: Record<string, string> = {
-    '_worker.js': '_workerJS',
-    '_worker.bundle': '_workerBundle',
+    '_worker.js': '_worker.js',
+    '_worker.bundle': '_worker.bundle',
     '_headers': '_headers',
     '_redirects': '_redirects',
-    '_routes.json': '_routesJson',
-    'functions-filepath-routing-config.json': 'functionsFilepathRoutingConfigJson',
+    '_routes.json': '_routes.json',
+    'functions-filepath-routing-config.json': 'functions-filepath-routing-config.json',
   };
 
   for (const f of files) {
@@ -535,10 +535,12 @@ export async function deployPages(
     commit_dirty: 'false' as const,
   };
 
-  for (const f of files) {
-    const basename = f.path.split('/').pop() || f.path;
-    const paramName = (!f.path.includes('/')) ? SPECIAL_FILE_TO_PARAM[basename] : undefined;
-    appLogger.info(`[Pages Deploy] File: "${f.path}" | basename: "${basename}" | paramName: ${paramName || '(none, normal file)'} | size: ${f.buffer.length} bytes`);
+for (const f of files) {
+	    const basename = f.path.split('/').pop() || f.path;
+	    // Only root-level files can be special (after prefix stripping, path has no directory)
+	    const isRootLevel = !f.path.includes('/');
+	    const paramName = isRootLevel ? SPECIAL_FILE_TO_PARAM[basename] : undefined;
+	    appLogger.info(`[Pages Deploy] File: "${f.path}" | basename: "${basename}" | paramName: ${paramName || '(none, normal file)'} | size: ${f.buffer.length} bytes`);
     if (paramName) {
       params[paramName] = new File([new Uint8Array(f.buffer)], basename, { type: 'application/octet-stream' });
     } else {

@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { createAuditLog } from '../models/auditLog';
 import { getAccountOr404 } from './routeUtils';
+import { getAccountById } from '../models/account';
 import {
   createKvNamespace, deleteKvNamespace, listKvKeys, getKvValue, putKvValue, deleteKvKey, bulkDeleteKvKeys,
   createD1Database, deleteD1Database, listD1Tables, getD1TableSchema, executeD1Query,
@@ -298,6 +299,61 @@ router.post('/:accountId/r2/:bucket/bulk-delete', async (req: Request, res: Resp
     await bulkDeleteR2Objects(account, p(req, 'bucket'), keys);
     createAuditLog(account.id, 'r2_bulk_delete', p(req, 'bucket'), `${keys.length} objects`, 'success');
     res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ============ Batch Operations ============
+
+router.post('/batch', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { type, accounts } = req.body;
+    if (!type || !['kv', 'd1', 'r2'].includes(type)) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'type must be kv, d1, or r2' } });
+      return;
+    }
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'accounts must be a non-empty array of { accountId, name }' } });
+      return;
+    }
+
+    const results: Array<{ accountId: number; accountName: string; name: string; success: boolean; id?: string; error?: string }> = [];
+
+    for (const item of accounts) {
+      const { accountId, name } = item;
+      if (!accountId || !name) {
+        results.push({ accountId, accountName: '', name: name || '(empty)', success: false, error: 'accountId and name are required' });
+        continue;
+      }
+      const account = getAccountById(accountId);
+      if (!account) {
+        results.push({ accountId, accountName: '', name, success: false, error: `Account #${accountId} not found` });
+        continue;
+      }
+
+      try {
+        let result: any;
+        if (type === 'kv') {
+          result = await createKvNamespace(account, name);
+          createAuditLog(account.id, 'kv_batch_create_ns', name, null, 'success');
+        } else if (type === 'd1') {
+          result = await createD1Database(account, name);
+          createAuditLog(account.id, 'd1_batch_create_db', name, null, 'success');
+        } else {
+          result = await createR2Bucket(account, name);
+          createAuditLog(account.id, 'r2_batch_create_bucket', name, null, 'success');
+        }
+        results.push({ accountId, accountName: account.name, name, success: true, id: result?.id || result?.uuid || result?.name });
+      } catch (e: any) {
+        results.push({ accountId, accountName: account.name, name, success: false, error: e.message || String(e) });
+      }
+    }
+
+    res.json({
+      results,
+      total: accounts.length,
+      succeeded: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length,
+    });
   } catch (err) { next(err); }
 });
 

@@ -531,9 +531,25 @@ router.post('/batch-deploy-pages', upload.single('zipFile'), async (req: Request
     }
     const zip = new AdmZip(req.file.buffer);
     const entries = zip.getEntries();
-    const files = entries
+    const rawFiles = entries
       .filter(e => !e.isDirectory)
-      .map(e => ({ path: e.entryName, buffer: e.getData() }));
+      .map(e => ({ path: e.entryName.replace(/\\/g, '/'), buffer: e.getData() }));
+
+    // Strip common prefix (same logic as single deploy)
+    let prefix = '';
+    if (rawFiles.length > 0) {
+      const parts = rawFiles[0].path.split('/');
+      if (parts.length > 1) {
+        const candidate = parts[0] + '/';
+        if (rawFiles.every(f => f.path.startsWith(candidate))) {
+          prefix = candidate;
+        }
+      }
+    }
+    const files = rawFiles.map(f => ({
+      path: prefix ? f.path.slice(prefix.length) : f.path,
+      buffer: f.buffer,
+    }));
 
     if (files.length === 0) {
       res.status(400).json({ error: { code: 'EMPTY_ZIP', message: 'Zip file contains no files' } }); return;

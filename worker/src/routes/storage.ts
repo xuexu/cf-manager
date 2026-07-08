@@ -254,4 +254,64 @@ app.put('/:accountId/r2/:bucket/upload', async (c) => {
   return c.json({ success: true });
 });
 
+// ============ Batch Operations ============
+
+app.post('/batch', async (c) => {
+  const db = c.env.DB;
+  const body = await c.req.json();
+  const { type, accounts } = body;
+
+  if (!type || !['kv', 'd1', 'r2'].includes(type)) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'type must be kv, d1, or r2' } }, 400);
+  }
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'accounts must be a non-empty array of { accountId, name }' } }, 400);
+  }
+
+  const results: Array<{ accountId: number; accountName: string; name: string; success: boolean; id?: string; error?: string }> = [];
+
+  for (const item of accounts) {
+    const { accountId, name } = item;
+    if (!accountId || !name) {
+      results.push({ accountId, accountName: '', name: name || '(empty)', success: false, error: 'accountId and name are required' });
+      continue;
+    }
+    const account = await getAccountById(db, accountId);
+    if (!account) {
+      results.push({ accountId, accountName: '', name, success: false, error: `Account #${accountId} not found` });
+      continue;
+    }
+
+    try {
+      let result: any;
+      if (type === 'kv') {
+        result = await cfFetch(account, `${acctPath(account)}/storage/kv/namespaces`, c.env.ENCRYPTION_KEY, {
+          method: 'POST', body: JSON.stringify({ title: name }),
+        });
+        await addAuditLog(db, { account_id: account.id, action: 'kv_batch_create_ns', target: name, status: 'success' });
+      } else if (type === 'd1') {
+        result = await cfFetch(account, `${acctPath(account)}/d1/database`, c.env.ENCRYPTION_KEY, {
+          method: 'POST', body: JSON.stringify({ name }),
+        });
+        await addAuditLog(db, { account_id: account.id, action: 'd1_batch_create_db', target: name, status: 'success' });
+      } else {
+        result = await cfFetch(account, `${acctPath(account)}/r2/buckets`, c.env.ENCRYPTION_KEY, {
+          method: 'POST', body: JSON.stringify({ name }),
+        });
+        await addAuditLog(db, { account_id: account.id, action: 'r2_batch_create_bucket', target: name, status: 'success' });
+      }
+      results.push({ accountId, accountName: account.name, name, success: true, id: result?.result?.id || result?.result?.uuid || name });
+    } catch (e: any) {
+      results.push({ accountId, accountName: account.name, name, success: false, error: e.message || String(e) });
+    }
+  }
+
+  return c.json({
+    results,
+    total: accounts.length,
+    succeeded: results.filter(r => r.success).length,
+    failed: results.filter(r => !r.success).length,
+  });
+});
+
 export default app;

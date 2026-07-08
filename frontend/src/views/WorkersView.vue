@@ -436,21 +436,38 @@
     <n-modal v-model:show="showBatchDeployModal" preset="dialog" title="批量部署" style="width: 650px; max-width: 95vw">
       <n-form label-placement="left" label-width="100">
         <n-form-item label="部署类型">
-          <n-radio-group v-model:value="batchType" @update:value="batchTargets = []">
+          <n-radio-group v-model:value="batchType" @update:value="batchTargets = []; batchMode_ = 'select'">
             <n-radio value="worker">Worker</n-radio>
             <n-radio value="pages">Pages</n-radio>
           </n-radio-group>
         </n-form-item>
-        <n-form-item :label="batchType === 'worker' ? '目标 Workers' : '目标 Pages'">
-          <n-checkbox-group v-model:value="batchTargets">
-            <n-space vertical>
-              <n-checkbox v-for="w in workerStore.workers.filter((w: any) => w.type === batchType)" :key="`${w.cfAccountId}-${w.name}`" :value="`${w.cfAccountId}:${w.name}`">
-                {{ w.accountName }} / {{ w.name }}
-              </n-checkbox>
-              <n-text v-if="!workerStore.workers.filter((w: any) => w.type === batchType).length" depth="3">暂无可用的 {{ batchType === 'worker' ? 'Worker' : 'Pages' }}</n-text>
-            </n-space>
-          </n-checkbox-group>
+        <n-form-item label="目标模式">
+          <n-radio-group v-model:value="batchMode_" @update:value="batchTargets = []">
+            <n-radio value="select">选择已有</n-radio>
+            <n-radio value="new">新建 / 覆盖</n-radio>
+          </n-radio-group>
         </n-form-item>
+        <template v-if="batchMode_ === 'select'">
+          <n-form-item :label="batchType === 'worker' ? '目标 Workers' : '目标 Pages'">
+            <n-checkbox-group v-model:value="batchTargets">
+              <n-space vertical>
+                <n-checkbox v-for="w in workerStore.workers.filter((w: any) => w.type === batchType)" :key="`${w.cfAccountId}-${w.name}`" :value="`${w.cfAccountId}:${w.name}`">
+                  {{ w.accountName }} / {{ w.name }}
+                </n-checkbox>
+                <n-text v-if="!workerStore.workers.filter((w: any) => w.type === batchType).length" depth="3">暂无可用的 {{ batchType === 'worker' ? 'Worker' : 'Pages' }}</n-text>
+              </n-space>
+            </n-checkbox-group>
+          </n-form-item>
+        </template>
+        <template v-else>
+          <n-form-item label="目标账号">
+            <n-select v-model:value="batchAccountIds" :options="accountOptions" filterable multiple placeholder="选择目标账号" style="min-width: 280px" />
+            <n-button size="tiny" style="margin-left: 8px" @click="batchAccountIds = accountOptions.map(a => a.value)">全选</n-button>
+          </n-form-item>
+          <n-form-item :label="batchType === 'worker' ? 'Worker 名称' : 'Pages 项目名'">
+            <n-input v-model:value="batchNewName" :placeholder="batchType === 'worker' ? '输入 Worker 名称（不存在则新建）' : '输入 Pages 项目名（不存在则新建）'" />
+          </n-form-item>
+        </template>
         <template v-if="batchType === 'worker'">
           <n-form-item label="脚本来源">
             <n-radio-group v-model:value="batchSource">
@@ -478,7 +495,7 @@
       </div>
       <template #action>
         <n-button @click="showBatchDeployModal = false">关闭</n-button>
-        <n-button type="primary" :loading="batchDeploying" @click="handleBatchDeploy" :disabled="!batchTargets.length">部署</n-button>
+        <n-button type="primary" :loading="batchDeploying" @click="handleBatchDeploy" :disabled="!canBatchDeploy">部署</n-button>
       </template>
     </n-modal>
 
@@ -1338,16 +1355,33 @@ const pagesDeploymentColumns: DataTableColumns<any> = [
 // ============ Batch Deploy ============
 const showBatchDeployModal = ref(false);
 const batchType = ref<'worker' | 'pages'>('worker');
+const batchMode_ = ref<'select' | 'new'>('select');
 const batchTargets = ref<string[]>([]);
+const batchAccountIds = ref<number[]>([]);
+const batchNewName = ref('');
 const batchSource = ref<'file' | 'url'>('file');
 const batchFile = ref<File | null>(null);
 const batchUrl = ref('');
 const batchDeploying = ref(false);
 const batchResults = ref<any[]>([]);
 
+const canBatchDeploy = computed(() => {
+  if (batchType.value === 'worker') {
+    if (batchSource.value === 'url' && !batchUrl.value) return false;
+    if (batchSource.value === 'file' && !batchFile.value) return false;
+  } else {
+    if (!batchFile.value) return false;
+  }
+  if (batchMode_.value === 'select') return batchTargets.value.length > 0;
+  return batchAccountIds.value.length > 0 && !!batchNewName.value.trim();
+});
+
 function openBatchDeploy() {
   batchType.value = workerStore.workers.some((w: any) => w.type === 'worker') ? 'worker' : 'pages';
+  batchMode_.value = 'select';
   batchTargets.value = [];
+  batchAccountIds.value = [];
+  batchNewName.value = '';
   batchFile.value = null;
   batchUrl.value = '';
   batchResults.value = [];
@@ -1355,10 +1389,16 @@ function openBatchDeploy() {
 }
 
 async function handleBatchDeploy() {
-  const targets = batchTargets.value.map(t => {
-    const [accountId, workerName] = t.split(':');
-    return { accountId: Number(accountId), workerName };
-  });
+  let targets: Array<{ accountId: number; workerName: string }>;
+  if (batchMode_.value === 'select') {
+    targets = batchTargets.value.map(t => {
+      const [accountId, workerName] = t.split(':');
+      return { accountId: Number(accountId), workerName };
+    });
+  } else {
+    const name = batchNewName.value.trim();
+    targets = batchAccountIds.value.map(id => ({ accountId: id, workerName: name }));
+  }
   batchDeploying.value = true;
   try {
     if (batchType.value === 'worker') {

@@ -2,9 +2,20 @@
   <div>
     <n-h2>存储管理</n-h2>
     <n-space align="center" style="margin-bottom: 16px">
-     <span>账号：</span>
-      <n-select v-model:value="selectedAccount" :options="accountOptions" filterable placeholder="搜索账号" style="width: 200px; max-width: 60vw" size="small" @update:value="onAccountChange" />
-   </n-space>
+      <template v-if="!batchMode">
+        <span>账号：</span>
+        <n-select v-model:value="selectedAccount" :options="accountOptions" filterable placeholder="搜索账号" style="width: 200px; max-width: 60vw" size="small" @update:value="onAccountChange" />
+      </template>
+      <template v-else>
+        <span>选择账号：</span>
+        <n-select v-model:value="batchAccountIds" :options="accountOptions" filterable multiple placeholder="选择多个账号" style="min-width: 280px; max-width: 60vw" size="small" />
+        <n-button size="small" @click="batchAccountIds = accountOptions.map(a => a.value)">全选</n-button>
+        <n-button size="small" @click="batchAccountIds = []">清空</n-button>
+      </template>
+      <n-button size="small" :type="batchMode ? 'warning' : 'default'" @click="toggleBatchMode">
+        {{ batchMode ? '退出批量模式' : '批量操作' }}
+      </n-button>
+    </n-space>
 
     <n-tabs v-model:value="activeTab" type="line">
       <!-- ============ KV Tab ============ -->
@@ -266,12 +277,35 @@
         </n-space>
       </template>
     </n-modal>
+
+    <!-- Batch Result Modal -->
+    <n-modal v-model:show="showBatchResult" preset="dialog" title="批量操作结果" style="width: 700px; max-width: 95vw">
+      <n-space vertical :size="16">
+        <n-space>
+          <n-statistic label="总计" :value="batchResult.total ?? 0" />
+          <n-statistic label="成功" :value="batchResult.succeeded ?? 0" />
+          <n-statistic label="失败" :value="batchResult.failed ?? 0" />
+        </n-space>
+        <n-data-table
+          v-if="batchResult.results"
+          :columns="batchResultColumns"
+          :data="batchResult.results"
+          :bordered="false"
+          size="small"
+          :max-height="300"
+          :scroll-x="500"
+        />
+      </n-space>
+      <template #action>
+        <n-button type="primary" @click="showBatchResult = false">关闭</n-button>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, h, onMounted, watch } from 'vue';
-import { NButton, NSpace, NInput, NSelect, NCheckbox, useMessage, useDialog } from 'naive-ui';
+import { NButton, NSpace, NInput, NSelect, NCheckbox, NTag, NStatistic, useMessage, useDialog } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { storageApi } from '../api/storage';
 import { accountsApi } from '../api/accounts';
@@ -303,6 +337,29 @@ const accountOptions = computed(() =>
     .filter((a: any) => a.is_active && (a.enabled_features || 'ai,workers,browser_render,dns,storage').includes('storage'))
     .map((a: any) => ({ label: a.name, value: a.id }))
 );
+
+// ============ Batch Mode ============
+const batchMode = ref(false);
+const batchAccountIds = ref<number[]>([]);
+const showBatchResult = ref(false);
+const batchResult = ref<{ total: number; succeeded: number; failed: number; results: Array<{ accountId: number; accountName: string; name: string; success: boolean; id?: string; error?: string }> }>({ total: 0, succeeded: 0, failed: 0, results: [] });
+
+const batchResultColumns: DataTableColumns<any> = [
+  { title: '账号', key: 'accountName', width: 120 },
+  { title: '资源名称', key: 'name', width: 160 },
+  { title: '结果', key: 'success', width: 80, render: (row) => h(NTag, { size: 'small', type: row.success ? 'success' : 'error' }, { default: () => row.success ? '成功' : '失败' }) },
+  { title: '详情', key: 'error', ellipsis: { tooltip: true }, render: (row) => row.error || '-' },
+];
+
+function toggleBatchMode() {
+  batchMode.value = !batchMode.value;
+  if (!batchMode.value) {
+    batchAccountIds.value = [];
+    showBatchResult.value = false;
+  }
+}
+
+const resourceTypeLabel = { kv: 'KV 命名空间', d1: 'D1 数据库', r2: 'R2 存储桶' };
 
 async function checkR2Available() {
   if (!selectedAccount.value) { r2Available.value = true; return; }
@@ -362,8 +419,22 @@ async function handleCreateConfirm() {
   if (!createModalName.value.trim() || !createModalCallback) return;
   createModalLoading.value = true;
   try {
-    await createModalCallback(createModalName.value.trim());
-    showCreateModal.value = false;
+    // Batch mode: create on all selected accounts
+    if (batchMode.value && batchAccountIds.value.length > 0) {
+      const type = activeTab.value as 'kv' | 'd1' | 'r2';
+      const { data } = await storageApi.batchCreate(type, batchAccountIds.value.map(id => ({
+        accountId: id,
+        name: createModalName.value.trim(),
+      })));
+      batchResult.value = data;
+      showBatchResult.value = true;
+      showCreateModal.value = false;
+      const label = resourceTypeLabel[type];
+      message.success(`${label}批量创建完成：成功 ${data.succeeded}，失败 ${data.failed}`);
+    } else {
+      await createModalCallback(createModalName.value.trim());
+      showCreateModal.value = false;
+    }
   } finally { createModalLoading.value = false; }
 }
 
@@ -380,8 +451,10 @@ async function handleDeleteKvNs(ns: any) {
 }
 
 function handleCreateKvNs() {
-  if (!selectedAccount.value) return;
-  openCreateModal('新建 KV 命名空间', '输入命名空间名称', async (name) => {
+  if (!batchMode.value && !selectedAccount.value) return;
+  if (batchMode.value && batchAccountIds.value.length === 0) { message.warning('请先选择至少一个账号'); return; }
+  const title = batchMode.value ? `批量新建 KV 命名空间 (${batchAccountIds.value.length} 个账号)` : '新建 KV 命名空间';
+  openCreateModal(title, '输入命名空间名称', async (name) => {
     await storageApi.createKvNamespace(selectedAccount.value!, name);
     message.success('命名空间已创建');
     loadKvNamespaces();
@@ -500,8 +573,10 @@ async function handleDeleteD1Db(db: any) {
 }
 
 function handleCreateD1Db() {
-  if (!selectedAccount.value) return;
-  openCreateModal('新建 D1 数据库', '输入数据库名称', async (name) => {
+  if (!batchMode.value && !selectedAccount.value) return;
+  if (batchMode.value && batchAccountIds.value.length === 0) { message.warning('请先选择至少一个账号'); return; }
+  const title = batchMode.value ? `批量新建 D1 数据库 (${batchAccountIds.value.length} 个账号)` : '新建 D1 数据库';
+  openCreateModal(title, '输入数据库名称', async (name) => {
     await storageApi.createD1Database(selectedAccount.value!, name);
     message.success('数据库已创建');
     loadD1Databases();
@@ -758,8 +833,10 @@ async function handleDeleteR2Bucket(b: any) {
 }
 
 function handleCreateR2Bucket() {
-  if (!selectedAccount.value) return;
-  openCreateModal('新建 R2 存储桶', '输入存储桶名称（小写字母、数字、连字符）', async (name) => {
+  if (!batchMode.value && !selectedAccount.value) return;
+  if (batchMode.value && batchAccountIds.value.length === 0) { message.warning('请先选择至少一个账号'); return; }
+  const title = batchMode.value ? `批量新建 R2 存储桶 (${batchAccountIds.value.length} 个账号)` : '新建 R2 存储桶';
+  openCreateModal(title, '输入存储桶名称（小写字母、数字、连字符）', async (name) => {
     await storageApi.createR2Bucket(selectedAccount.value!, name);
     message.success('存储桶已创建');
     loadR2Buckets();

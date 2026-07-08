@@ -45,6 +45,10 @@ export const storageApi = {
     apiClient.delete(`/storage/${accountId}/r2/${bucket}/objects`, { params: { key } }),
   bulkDeleteR2Objects: (accountId: number, bucket: string, keys: string[]) =>
     apiClient.post(`/storage/${accountId}/r2/${bucket}/bulk-delete`, { keys }),
+
+  // Batch operations across multiple accounts
+  batchCreate: (type: 'kv' | 'd1' | 'r2', accounts: Array<{ accountId: number; name: string }>) =>
+    apiClient.post('/storage/batch', { type, accounts }),
 };
 
 export const tasksApi = {
