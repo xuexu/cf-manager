@@ -30,6 +30,9 @@ export const storageApi = {
   // R2
   getR2Buckets: (accountId: number, config?: AxiosRequestConfig) => apiClient.get(`/storage/${accountId}/r2`, config),
   createR2Bucket: (accountId: number, name: string) => apiClient.post(`/storage/${accountId}/r2`, { name }),
+  // 跨账户批量创建同名资源
+  batchCreate: (type: 'kv' | 'd1' | 'r2', accounts: Array<{ accountId: number; name: string }>) =>
+    apiClient.post('/storage/batch', { type, accounts }),
   deleteR2Bucket: (accountId: number, bucket: string) => apiClient.delete(`/storage/${accountId}/r2/${bucket}`),
   getR2Objects: (accountId: number, bucket: string, params?: { prefix?: string; delimiter?: string; cursor?: string; limit?: number }) =>
     apiClient.get(`/storage/${accountId}/r2/${bucket}/objects`, { params }),
