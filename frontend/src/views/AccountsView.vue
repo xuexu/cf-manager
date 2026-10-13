@@ -135,7 +135,7 @@
         </n-alert>
         <n-upload
           :max="1"
-          accept=".csv,text/csv,text/plain"
+          accept=".csv,.txt,text/csv,text/plain"
           :default-upload="false"
           :show-file-list="true"
           v-model:file-list="importFileList"
@@ -777,15 +777,48 @@ function closeImportModal() {
   skipVerify.value = false;
 }
 
+/**
+ * TXT 批量导入：每行「账号名称 apiToken」（空格 / Tab 分隔，# 开头为注释），
+ * 在前端转换为 name,apiToken 两列的 CSV，复用后端 /import-csv（去重 / 校验 / 自动获取 account_id 均由后端处理）。
+ * 账号名称本身可以含空格：最后一段视为 apiToken，其余拼回名称。
+ */
+function csvCell(v: string): string {
+  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+async function txtToCsvFile(file: File): Promise<File> {
+  const text = (await file.text()).replace(/^\uFEFF/, '');
+  const lines = ['name,apiToken'];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 2) continue;
+    const token = parts.pop() as string;
+    lines.push(`${csvCell(parts.join(' '))},${csvCell(token)}`);
+  }
+  if (lines.length === 1) throw new Error('empty');
+  return new File([lines.join('\n')], file.name.replace(/\.txt$/i, '') + '.csv', { type: 'text/csv' });
+}
+
 async function handleImport() {
   if (!importFile.value) {
     message.warning(t('accounts.msg.csvFileRequired'));
     return;
   }
+  let uploadFile: File = importFile.value;
+  if (/\.txt$/i.test(uploadFile.name)) {
+    try {
+      uploadFile = await txtToCsvFile(uploadFile);
+    } catch {
+      message.warning(t('accounts.msg.txtNoValidRows'));
+      return;
+    }
+  }
   importing.value = true;
   importResult.value = null;
   try {
-    const result = await accountStore.importCsv(importFile.value, skipVerify.value);
+    const result = await accountStore.importCsv(uploadFile, skipVerify.value);
     importResult.value = result;
     const s = result.summary;
     message.success(t('accounts.msg.importComplete', { success: s.success, skipped: s.skipped, error: s.error, skipNote: skipVerify.value ? t('accounts.msg.importSkipNote') : '' }));

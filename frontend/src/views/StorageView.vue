@@ -209,15 +209,40 @@
     </n-modal>
 
     <!-- Create Resource Modal -->
-    <n-modal v-model:show="showCreateModal" preset="dialog" :title="createModalTitle" style="width: 450px; max-width: 95vw">
+    <n-modal v-model:show="showCreateModal" preset="dialog" :title="createModalTitle" style="width: 520px; max-width: 95vw">
       <n-form label-placement="left" label-width="80">
         <n-form-item :label="createModalLabel">
           <n-input v-model:value="createModalName" :placeholder="createModalPlaceholder" @keyup.enter="handleCreateConfirm" />
+        </n-form-item>
+        <n-form-item :label="t('storage.targetAccounts')">
+          <n-space vertical :size="4" style="width: 100%">
+            <n-select v-model:value="createTargetIds" :options="accountOptions" :render-label="renderAccountLabel" filterable multiple max-tag-count="responsive" size="small" />
+            <n-space :size="8" align="center">
+              <n-button size="tiny" @click="createTargetIds = accountOptions.map(a => a.value)">{{ t('common.selectAll') }}</n-button>
+              <n-button size="tiny" @click="createTargetIds = []">{{ t('common.clearSelection') }}</n-button>
+              <n-text depth="3" style="font-size: 12px">{{ t('storage.targetAccountsHint') }}</n-text>
+            </n-space>
+          </n-space>
         </n-form-item>
       </n-form>
       <template #action>
         <n-button @click="showCreateModal = false">{{ t('common.cancel') }}</n-button>
         <n-button type="primary" :loading="createModalLoading" @click="handleCreateConfirm">{{ t('common.create') }}</n-button>
+      </template>
+    </n-modal>
+
+    <!-- Batch Create Result Modal -->
+    <n-modal v-model:show="showBatchResult" preset="dialog" :title="t('storage.batchResultTitle')" style="width: 700px; max-width: 95vw">
+      <n-space vertical :size="16">
+        <n-space>
+          <n-statistic :label="t('common.total')" :value="batchResult.total" />
+          <n-statistic :label="t('common.success')" :value="batchResult.succeeded" />
+          <n-statistic :label="t('common.error')" :value="batchResult.failed" />
+        </n-space>
+        <n-data-table :columns="batchResultColumns" :data="batchResult.results" :bordered="false" size="small" :max-height="300" :scroll-x="500" />
+      </n-space>
+      <template #action>
+        <n-button type="primary" @click="showBatchResult = false">{{ t('common.close') }}</n-button>
       </template>
     </n-modal>
 
@@ -435,20 +460,52 @@ const createModalPlaceholder = ref('');
 const createModalName = ref('');
 const createModalLoading = ref(false);
 let createModalCallback: ((name: string) => Promise<void>) | null = null;
+// 目标账号（默认当前账号；多选时走跨账户批量创建）
+const createModalType = ref<'kv' | 'd1' | 'r2'>('kv');
+const createTargetIds = ref<number[]>([]);
 
-function openCreateModal(title: string, placeholder: string, callback: (name: string) => Promise<void>) {
+// ============ 跨账户批量创建结果 ============
+type BatchCreateItem = { accountId: number; accountName: string; name: string; success: boolean; id?: string; error?: string };
+const showBatchResult = ref(false);
+const batchResult = ref<{ total: number; succeeded: number; failed: number; results: BatchCreateItem[] }>({ total: 0, succeeded: 0, failed: 0, results: [] });
+const batchResultColumns: DataTableColumns<BatchCreateItem> = [
+  { title: () => t('storage.colAccount'), key: 'accountName', width: 140 },
+  { title: () => t('storage.colResourceName'), key: 'name', width: 160 },
+  { title: () => t('storage.colResult'), key: 'success', width: 80, render: (row) => h(NTag, { size: 'small', type: row.success ? 'success' : 'error' }, { default: () => row.success ? t('common.success') : t('common.error') }) },
+  { title: () => t('storage.colDetail'), key: 'error', ellipsis: { tooltip: true }, render: (row) => row.error || '-' },
+];
+
+function openCreateModal(title: string, placeholder: string, callback: (name: string) => Promise<void>, type: 'kv' | 'd1' | 'r2') {
   createModalTitle.value = title;
   createModalPlaceholder.value = placeholder;
   createModalName.value = '';
   createModalCallback = callback;
+  createModalType.value = type;
+  createTargetIds.value = selectedAccount.value ? [selectedAccount.value] : [];
   showCreateModal.value = true;
 }
 
 async function handleCreateConfirm() {
-  if (!createModalName.value.trim() || !createModalCallback) return;
+  const name = createModalName.value.trim();
+  if (!name || !createModalCallback) return;
+  if (createTargetIds.value.length === 0) { message.warning(t('storage.msg.selectAccountFirst')); return; }
   createModalLoading.value = true;
   try {
-    await createModalCallback(createModalName.value.trim());
+    const onlyCurrent = createTargetIds.value.length === 1 && createTargetIds.value[0] === selectedAccount.value;
+    if (onlyCurrent) {
+      await createModalCallback(name);
+    } else {
+      const { data } = await storageApi.batchCreate(createModalType.value, createTargetIds.value.map(id => ({ accountId: id, name })));
+      batchResult.value = data;
+      showBatchResult.value = true;
+      message.success(t('storage.msg.batchCreateDone', { succeeded: data.succeeded, failed: data.failed }));
+      // 当前账号在目标中时刷新列表
+      if (selectedAccount.value && createTargetIds.value.includes(selectedAccount.value)) {
+        if (createModalType.value === 'kv') loadKvNamespaces();
+        else if (createModalType.value === 'd1') loadD1Databases();
+        else loadR2Buckets();
+      }
+    }
     showCreateModal.value = false;
   } finally { createModalLoading.value = false; }
 }
@@ -471,7 +528,7 @@ function handleCreateKvNs() {
     await storageApi.createKvNamespace(selectedAccount.value!, name);
     message.success(t('storage.msg.namespaceCreated'));
     loadKvNamespaces();
-  });
+  }, 'kv');
 }
 
 async function loadKvNamespaces() {
@@ -617,7 +674,7 @@ function handleCreateD1Db() {
     await storageApi.createD1Database(selectedAccount.value!, name);
     message.success(t('storage.msg.databaseCreated'));
     loadD1Databases();
-  });
+  }, 'd1');
 }
 
 async function loadD1Databases() {
@@ -880,7 +937,7 @@ function handleCreateR2Bucket() {
     await storageApi.createR2Bucket(selectedAccount.value!, name);
     message.success(t('storage.msg.bucketCreated'));
     loadR2Buckets();
-  });
+  }, 'r2');
 }
 
 async function loadR2Buckets() {
